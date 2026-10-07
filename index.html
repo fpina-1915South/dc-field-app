@@ -213,7 +213,8 @@ const HELD_WAITING = ["Storis","Store","Guest Solutions","Delivery support","Ven
 const OT_WARN=38, OT_LIMIT=40, OT_DEPTS=["receiving","outbound","director"];
 const OT_ACTIONS=["","Hours adjusted on the schedule","Sent home early","Day off moved","OT approved by director","Not fixed yet"];
 const OT_NOTE_REQ=["OT approved by director","Not fixed yet"];
-async function otWatch(dc,date){
+async function salariedSet(dc){const out=new Set();try{(await store.query([["dc","EQUAL",dc]],"dcleaders")).filter(l=>l.active!==false&&["manager","director"].includes(l.role)).forEach(l=>{out.add(nameKey(l.name));const last=String(l.name||"").trim().split(/\s+/).pop().toLowerCase();out.add("last:"+last)})}catch(e){}return out}
+async function otWatch(dc,date){const SAL=await salariedSet(dc);const isSal=x=>SAL.has(nameKey(x.name))||(x.leader&&SAL.has("last:"+String(firstLast(x.name)).trim().split(/\s+/).pop().toLowerCase()))||/manag|director|delivery supervisor/i.test((x.dept||"")+" "+(x.pos||""));
   const wd=new Date(date+"T12:00:00").getDay(),mon=addDays(date,-((wd+6)%7));const days=[0,1,2,3,4,5,6].map(i=>addDays(mon,i));
   const pp=await pphGet(dc+"_people");const names={};((pp&&pp.people)||[]).forEach(x=>names[x.id]=x);
   const P={};const get=(id,o)=>P[id]=P[id]||{id,name:o.name||id,team:o.team||"",sup:o.sup||"",worked:0,sched:0,est:0};
@@ -222,11 +223,11 @@ async function otWatch(dc,date){
     const sc=await loadSchedule(dc,d);const sp=sc?sc.people:{};
     let act=null;if(d<date){const o=await pphGet(dc+"_ot_"+d);if(o&&o.rows){act={rows:o.rows,all:true}}else{const h=await pphGet(dc+"_hrs_"+d);if(h&&h.rows)act={rows:h.rows,all:false}}}
     if(act){paidThrough=d;Object.entries(act.rows).forEach(([id,x])=>{const nm=names[id]||{};const s2=sp[id]||{};get(id,{name:x.name||nm.name||s2.name,team:s2.team||x.dept,sup:x.sup||nm.sup||s2.sup}).worked+=act.all?n(x.h):n(x.reg)+n(x.ot)})}
-    Object.values(sp).forEach(x=>{if(/manag|director/i.test(x.dept||""))return;const q=get(x.id,x);if(!q.team)q.team=x.team;if(!q.sup)q.sup=x.sup;
+    Object.values(sp).forEach(x=>{if(isSal(x))return;const q=get(x.id,x);if(!q.team)q.team=x.team;if(!q.sup)q.sup=x.sup;
       if(act&&(act.all||act.rows[x.id]))return;   // Paylocity already counted this day
       if(d<date)q.est+=x.hrs;q.sched+=x.hrs});
   }
-  const list=Object.values(P).map(q=>Object.assign(q,{worked:r2(q.worked),sched:r2(q.sched),proj:r2(q.worked+q.sched)})).filter(q=>q.proj>=OT_WARN).sort((a,b)=>b.proj-a.proj);
+  const list=Object.values(P).map(q=>Object.assign(q,{worked:r2(q.worked),sched:r2(q.sched),proj:r2(q.worked+q.sched)})).filter(q=>q.proj>OT_LIMIT&&!SAL.has(nameKey(q.name))).sort((a,b)=>b.proj-a.proj);
   return {mon,paidThrough,list}}
 function otScope(rec,w){if(!w)return [];if(rec.dept==="director")return w.list;const last=String(S.profile.name||"").trim().split(/\s+/).pop().toLowerCase();const mine=w.list.filter(x=>String(x.sup||"").toLowerCase()===last);return mine.length?mine:w.list}
 function otPrefill(rec,w){rec.lists.ot=rec.lists.ot||[];const have={};rec.lists.ot.forEach(x=>{if(x.id)have[x.id]=x});
@@ -234,7 +235,7 @@ function otPrefill(rec,w){rec.lists.ot=rec.lists.ot||[];const have={};rec.lists.
 function renderOt(){
   const r=S.rec,box=document.getElementById("rows_ot");if(!box)return;const rows=r.lists.ot||[];const w=S.otw;
   const opts=(id,v)=>'<select class="in" id="'+id+'">'+OT_ACTIONS.map(o=>'<option value="'+esc(o)+'"'+(v===o?' selected':'')+(o?'':' disabled')+'>'+(o||'Pick what you did')+'</option>').join("")+'</select>';
-  box.innerHTML='<div class="def" style="margin:0 0 8px">Pull up this week in Paylocity. Anyone on pace for '+OT_WARN+'+ hours shows here: hours worked'+(w&&w.paidThrough?' through '+md(w.paidThrough):'')+' plus what the DC schedule still has them on for. Adjust the schedule so nobody goes over '+OT_LIMIT+' unless the director approved it.</div>'+
+  box.innerHTML='<div class="def" style="margin:0 0 8px">Pull up this week in Paylocity. Anyone on pace for more than '+OT_LIMIT+' hours shows here: hours worked'+(w&&w.paidThrough?' through '+md(w.paidThrough):'')+' plus what the DC schedule still has them on for. Adjust the schedule so nobody goes over '+OT_LIMIT+' unless the director approved it.</div>'+
    (rows.length?'':'<div class="def" style="color:var(--good);font-weight:700">Nobody on pace for overtime this week.</div>')+
    rows.map((x,i)=>{const over=n(x.proj)>OT_LIMIT;const ok=x.action&&x.action!=="Not fixed yet";
     return '<div class="std'+(ok?' ok':x.action==="Not fixed yet"?' no':'')+'" style="margin-bottom:8px">'+
@@ -1324,7 +1325,7 @@ async function renderBoard(){
   dcs.forEach(dc=>{const w=OTW[dc.code];if(!w||!w.list.length)return;const over=w.list.filter(x=>x.proj>OT_LIMIT);
     const fixed={};S.bData.filter(r=>r.dc===dc.code&&OT_DEPTS.includes(r.dept)).forEach(r=>((r.lists||{}).ot||[]).forEach(x=>{if(x.action&&x.action!=="Not fixed yet")fixed[x.id||nameKey(x.who)]=x.action}));
     const open=w.list.filter(x=>!fixed[x.id]);if(!open.length)return;
-    flags.push([over.some(x=>!fixed[x.id])?"b":"w",'<b>'+dc.name+' overtime watch</b>: '+open.length+' on pace for '+OT_WARN+'+ hours this week with no fix logged ('+open.slice(0,6).map(x=>esc(x.name.includes(",")?x.name.split(",")[1].trim()+" "+x.name.split(",")[0]:x.name)+' '+x.proj).join(", ")+(open.length>6?', +'+(open.length-6)+' more':'')+')'])});
+    flags.push([over.some(x=>!fixed[x.id])?"b":"w",'<b>'+dc.name+' overtime watch</b>: '+open.length+' on pace for overtime (over '+OT_LIMIT+' hours) this week with no fix logged ('+open.slice(0,6).map(x=>esc(x.name.includes(",")?x.name.split(",")[1].trim()+" "+x.name.split(",")[0]:x.name)+' '+x.proj).join(", ")+(open.length>6?', +'+(open.length-6)+' more':'')+')'])});
   dcs.forEach(dc=>DEPTS.forEach(dp=>{const rs=recs(dc,dp.k);
     rs.forEach(r=>{
       if(statusFor(r,dc)==="late")flags.push(["w",'<b>'+dc.name+' '+dp.name+'</b>: recap came in late, '+niceTime(r.submittedAt,dc.tz)]);
