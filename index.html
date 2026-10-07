@@ -426,8 +426,8 @@ const DEMO = !FIREBASE_CONFIG.apiKey;
 /* ---------------- IndexedDB (drafts + demo storage) ---------------- */
 const memDB={};const idbMem={get:async(s,k)=>((memDB[s]||{})[k]||null),put:async(s,k,v)=>{(memDB[s]=memDB[s]||{})[k]=JSON.parse(JSON.stringify(v))},del:async(s,k)=>{if(memDB[s])delete memDB[s][k]},all:async s=>Object.values(memDB[s]||{})};
 const idb={db:null,
-  open(){return new Promise(res=>{if(this.db)return res(this.db);let r;try{r=indexedDB.open("dcfield",13)}catch(e){return res(null)}
-    r.onupgradeneeded=()=>{const d=r.result;["drafts","photos","records","issues","bonus","bonuspay","hourly","hourlydc","volume","budget","pph","missed","drivers","uploads","schedule","leaders","team","teamlogin","teamuid","public","reviews","mine","flags","huddles","dcgoals"].forEach(s=>{if(!d.objectStoreNames.contains(s))d.createObjectStore(s)})};
+  open(){return new Promise(res=>{if(this.db)return res(this.db);let r;try{r=indexedDB.open("dcfield",14)}catch(e){return res(null)}
+    r.onupgradeneeded=()=>{const d=r.result;["drafts","photos","records","issues","bonus","bonuspay","hourly","hourlydc","volume","budget","pph","missed","drivers","uploads","schedule","leaders","team","teamlogin","teamuid","public","reviews","mine","flags","huddles","dcgoals","feedback"].forEach(s=>{if(!d.objectStoreNames.contains(s))d.createObjectStore(s)})};
     r.onsuccess=()=>{this.db=r.result;res(this.db)};r.onerror=()=>res(null)})},
   async get(s,k){const d=await this.open();if(!d)return idbMem.get(s,k);return new Promise(res=>{const q=d.transaction(s).objectStore(s).get(k);q.onsuccess=()=>res(q.result||null);q.onerror=()=>res(null)})},
   async put(s,k,v){const d=await this.open();if(!d)return idbMem.put(s,k,v);return new Promise(res=>{const t=d.transaction(s,"readwrite");t.objectStore(s).put(v,k);t.oncomplete=()=>res();t.onerror=()=>res()})},
@@ -545,32 +545,57 @@ let MIC_FOCUS=null;
 /* =====================================================================
    RENDER
    ===================================================================== */
+/* ---------- pilot feedback: anyone can send it, Frank and the directors read it ---------- */
+Object.assign(DEMO_STORE,{dcfeedback:"feedback"});
+const FB_AREAS=["Morning huddle","My recap","PPH log","DC board","Flags","Reviews","Team member app","DC Scheduler link","Bonus","Other"];
+function feedbackModal(){const p=S.profile;let rating="";const fresh=area=>{};
+  const m=modal('<h2>Pilot feedback</h2><p class="muted" style="margin-top:0">Good or bad, we want it. It goes straight to Frank and the DC directors.</p><label class="lbl">How is it working?</label><div class="chips" id="fbr"><button class="chip" data-r="good">&#128077; Working well</button><button class="chip" data-r="bad">&#128078; Needs work</button><button class="chip" data-r="idea">&#128161; Idea</button></div>'+
+    '<label class="lbl">What part?</label><select class="in" id="fba">'+FB_AREAS.map(a=>'<option>'+a+'</option>').join("")+'</select><label class="lbl">Tell us more</label><textarea class="in" id="fbt" placeholder="What happened, what would make it better"></textarea><div style="height:10px"></div><button class="btn wide" id="fbgo">Send</button><button class="btn ghost wide" data-close>Cancel</button>');
+  m.querySelectorAll("#fbr .chip").forEach(b=>b.onclick=()=>{rating=b.dataset.r;m.querySelectorAll("#fbr .chip").forEach(x=>x.classList.toggle("on",x===b))});
+  m.querySelector("#fbgo").onclick=async()=>{const text=m.querySelector("#fbt").value.trim();if(!rating)return toast("Pick working well, needs work or idea");if(!text)return toast("Tell us a little more");
+    const t=p.team;const id=Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+    const doc={id,rating,area:m.querySelector("#fba").value,text,name:p.name||p.email,email:p.role==="team"?"":p.email,uid:p.role==="team"?(p.uid||""):"",role:p.role==="team"?"Team member":(RV_LEVEL[(p.assign||{}).role]||(p.exec?"Exec":"Leader")),dc:t?t.dc:((p.assign||{}).dc||S.dc||""),view:S.view||"",at:new Date().toISOString(),status:"new"};
+    try{await store.set("dcfeedback",id,doc);m.remove();toast("Thank you. We read every one.")}catch(e){toast("Did not send: "+e.message)}}}
+async function renderFeedback(){const main=document.getElementById("main");const f=S.fbf=S.fbf||"all";main.innerHTML='<div class="card muted">Loading...</div>';
+  let all=[];try{all=(await Promise.all(["good","bad","idea"].map(r=>store.query([["rating","EQUAL",r]],"dcfeedback").catch(()=>[])))).flat()}catch(e){}
+  all.sort((a,b)=>String(b.at).localeCompare(String(a.at)));const c=k=>all.filter(x=>x.rating===k).length;const open=all.filter(x=>x.status!=="handled").length;
+  const list=all.filter(x=>f==="all"||(f==="open"?x.status!=="handled":x.rating===f));
+  let h='<div class="card"><h2 style="margin-top:0">Pilot feedback</h2>'+help("Everything leaders and team members send from the Feedback link. Read it daily during the pilot. Mark it handled with what you changed, and the person sees you heard them.")+
+   '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin:10px 0">'+[["Working well",c("good"),"var(--good)"],["Needs work",c("bad"),"var(--clay)"],["Ideas",c("idea"),"var(--navy)"],["Not handled",open,"#9A5B12"]].map(([l,v,col])=>'<div style="border:1px solid var(--line);border-radius:12px;padding:10px"><div class="muted" style="font-size:12px">'+l+'</div><div style="font-size:26px;font-weight:800;color:'+col+'">'+v+'</div></div>').join("")+'</div>'+
+   '<div class="chips" id="fbf">'+[["all","All"],["open","Not handled"],["bad","Needs work"],["good","Working well"],["idea","Ideas"]].map(([k,l])=>'<button class="chip '+(f===k?"on":"")+'" data-f="'+k+'">'+l+'</button>').join("")+'</div></div>';
+  const ic={good:"&#128077;",bad:"&#128078;",idea:"&#128161;"};
+  h+='<div class="card">'+(list.length?list.map((x,i)=>'<div class="flag" style="align-items:flex-start"><span style="font-size:20px">'+ic[x.rating]+'</span><div style="flex:1"><b style="color:var(--ink)">'+esc(x.area)+'</b> <span class="muted" style="font-size:12px">'+esc(x.name)+' &middot; '+esc(x.role)+(x.dc?' &middot; '+dcBy(x.dc).name:'')+' &middot; '+md(String(x.at).slice(0,10))+'</span><div style="margin-top:4px;color:var(--ink);white-space:pre-wrap">'+esc(x.text)+'</div>'+(x.status==="handled"?'<div class="def" style="margin:4px 0 0"><b>What we did:</b> '+esc(x.reply||"")+'</div>':'')+'</div>'+(x.status==="handled"?'<span class="pill p-ok">Handled</span>':'<button class="btn sm" data-fbh="'+i+'">Handled</button>')+'</div>').join(""):'<div class="muted">Nothing yet. Share the Feedback link with the pilot team.</div>')+'</div>';
+  main.innerHTML=h;main.querySelectorAll("#fbf .chip").forEach(b=>b.onclick=()=>{S.fbf=b.dataset.f;renderFeedback()});
+  main.querySelectorAll("[data-fbh]").forEach(b=>b.onclick=()=>{const x=list[+b.dataset.fbh];const m=modal('<h2>What did we do?</h2><div class="def">'+esc(x.text)+'</div><textarea class="in" id="fbrp" placeholder="Fixed it, live tomorrow"></textarea><div style="height:10px"></div><button class="btn wide" id="fbok">Mark handled</button><button class="btn ghost wide" data-close>Cancel</button>');
+    m.querySelector("#fbok").onclick=async()=>{const r=m.querySelector("#fbrp").value.trim();if(!r)return toast("Say what we did");x.status="handled";x.reply=r;x.handledBy=S.profile.email;x.handledAt=new Date().toISOString();try{await store.set("dcfeedback",x.id,x);m.remove();renderFeedback()}catch(e){toast(e.message)}}})}
 /* navigation by role: at most 4 tabs plus More */
 function navItems(p){const hasBonus=p.bonusAdmin||(p.payDocs||[]).length||(p.hourlyDocs||[]).length;const exec=p.reviewer;const mgr=canManage(p);
   const T=(v,l,d)=>[v,l,d||""];let main,more;
   if(exec){main=[T("board","DC board"),T("flags","Flags"),T("reviews","Reviews"),T("file","Today")];
-    more=[T("fm","Final mile","Missed stops, drivers and the final mile download"),T("pph","PPH tracker","Pieces per hour by job and associate"),T("uploads","Uploads","Load the morning files"),hasBonus&&T("bonus","Bonus","Leader quarterly and hourly bonus"),T("access","Team access","Leaders, recaps and team member sign-in"),T("goals","Standing goals","The daily goals every huddle starts from"),T("myreviews","My reviews","Reviews written for you")]}
+    more=[T("fm","Final mile","Missed stops, drivers and the final mile download"),T("pph","PPH tracker","Pieces per hour by job and associate"),T("uploads","Uploads","Load the morning files"),hasBonus&&T("bonus","Bonus","Leader quarterly and hourly bonus"),T("access","Team access","Leaders, recaps and team member sign-in"),T("goals","Standing goals","The daily goals every huddle starts from"),T("myreviews","My reviews","Reviews written for you"),T("feedback","Pilot feedback","What the pilot team is telling us")]}
   else if(mgr){main=[T("file","Today"),T("flags","Flags"),T("reviews","Reviews")];more=[T("pph","PPH tracker","Pieces per hour by job and associate"),hasBonus&&T("bonus","Bonus","Your bonus and approvals"),T("access","Team access","Turn on team member sign-in"),T("goals","Standing goals","The daily goals every huddle starts from"),T("myreviews","My reviews","Reviews written for you")]}
   else{main=[T("file","Today"),T("reviews","Reviews"),T("myreviews","My reviews")];more=hasBonus?[T("bonus","My bonus","Your bonus tracker")]:[]}
+  more.push(T("givefb","Give feedback","Tell us what is working and what is not"));
   return {main,more:more.filter(Boolean)}}
 const VIEW_GROUP={pph:"board",fm:"board",huddle:"file"};
 function navHTML(p){const N=navItems(p);const cur=S.view;const inMore=N.more.some(x=>x[0]===cur)&&!N.main.some(x=>x[0]===(VIEW_GROUP[cur]||cur));
   return N.main.map(([v,l])=>'<button class="tab '+(cur===v||VIEW_GROUP[cur]===v&&!N.more.some(x=>x[0]===cur)?"on":"")+'" data-v="'+v+'">'+l+'</button>').join("")+(N.more.length?'<button class="tab '+(inMore?"on":"")+'" id="navmore">More</button>':'')}
-function goView(v){S.view=v;if(v==="fm")S.bMode="fm";else if(v==="board"&&S.bMode==="fm")S.bMode="day";render()}
+function goView(v){if(v==="givefb"){feedbackModal();return}S.view=v;if(v==="fm")S.bMode="fm";else if(v==="board"&&S.bMode==="fm")S.bMode="day";render()}
 function render(){
   if(!S.profile){renderLogin();return}
   const p=S.profile;
   if(!S._landed&&p.role!=="team"){S._landed=true;if(p.reviewer&&!ls("noland")&&(!S.view||S.view==="file"))S.view="board"}
   if(p.role==="team"){if(!["team","mybonus","myreviews"].includes(S.view))S.view="team";
-    app.innerHTML=(DEMO?'<div class="demo">DEMO MODE: nothing leaves this device until the Firebase config is pasted in</div>':"")+'<div class="top"><div class="row"><div class="brand">1915 SOUTH<small>'+esc(p.team?dcBy(p.team.dc).name+" DC":"DC Field App")+'</small></div><div class="sp"></div><div class="tabs">'+(p.team&&p.team.pinSet?teamTabs(p):'')+'</div></div><div class="row" style="margin-top:6px"><div class="sp"></div><div class="who">'+esc(p.name||"")+' &middot; <a href="#" id="signout">Sign out</a></div></div></div><div class="wrap" id="main"></div>';
-    app.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{S.view=b.dataset.v;render()});document.getElementById("signout").onclick=e=>{e.preventDefault();auth.out();S.profile=null;S.teamLogin=true;if(DEMO){ls("demo_name","");ls("demo_email","")}render()};renderBar();renderTeam();return}
+    app.innerHTML=(DEMO?'<div class="demo">DEMO MODE: nothing leaves this device until the Firebase config is pasted in</div>':"")+'<div class="top"><div class="row"><div class="brand">1915 SOUTH<small>'+esc(p.team?dcBy(p.team.dc).name+" DC":"DC Field App")+'</small></div><div class="sp"></div><div class="tabs">'+(p.team&&p.team.pinSet?teamTabs(p):'')+'</div></div><div class="row" style="margin-top:6px"><div class="sp"></div><div class="who">'+esc(p.name||"")+' &middot; <a href="#" id="givefb">Feedback</a> &middot; <a href="#" id="signout">Sign out</a></div></div></div><div class="wrap" id="main"></div>';
+    app.querySelectorAll(".tab").forEach(b=>b.onclick=()=>{S.view=b.dataset.v;render()});{const g=document.getElementById("givefb");if(g)g.onclick=e=>{e.preventDefault();feedbackModal()}}document.getElementById("signout").onclick=e=>{e.preventDefault();auth.out();S.profile=null;S.teamLogin=true;if(DEMO){ls("demo_name","");ls("demo_email","")}render()};renderBar();renderTeam();return}
   app.innerHTML=(DEMO?'<div class="demo">DEMO MODE: nothing leaves this device until the Firebase config is pasted in</div>':"")+
   '<div class="top"><div class="row"><div class="brand">1915 SOUTH<small>DC Field App</small></div><div class="sp"></div>'+
   '<div class="tabs">'+navHTML(p)+'</div>'+
-  '</div><div class="row" style="margin-top:6px"><div class="sp"></div><div class="who">'+esc(p.name||p.email)+' &middot; <a href="#" id="signout">Sign out</a></div></div></div>'+
+  '</div><div class="row" style="margin-top:6px"><div class="sp"></div><div class="who">'+esc(p.name||p.email)+' &middot; <a href="#" id="givefb">Feedback</a> &middot; <a href="#" id="signout">Sign out</a></div></div></div>'+
   '<div class="wrap" id="main"></div>';
   app.querySelectorAll(".tab[data-v]").forEach(b=>b.onclick=()=>goView(b.dataset.v));
   {const mb=document.getElementById("navmore");if(mb)mb.onclick=()=>{const m=modal('<h2>More</h2>'+navItems(p).more.map(([v,l,d])=>'<button class="flag" data-mv="'+v+'" style="width:100%;text-align:left;background:#fff;cursor:pointer;border:1px solid var(--line)"><div style="flex:1"><b style="color:var(--ink)">'+l+'</b><div class="muted" style="font-size:12px">'+d+'</div></div></button>').join("")+'<button class="btn ghost wide" data-close>Close</button>');m.querySelectorAll("[data-mv]").forEach(x=>x.onclick=()=>{m.remove();goView(x.dataset.mv)})}}
+  {const g=document.getElementById("givefb");if(g)g.onclick=e=>{e.preventDefault();feedbackModal()}}
   document.getElementById("signout").onclick=e=>{e.preventDefault();auth.out();S.profile=null;render()};
   {const mn=document.getElementById("main");if(mn)mn.style.maxWidth=S.view==="pph"?"1400px":"";}
   if(S.view==="pph"){renderPPH();return}
@@ -578,6 +603,7 @@ function render(){
   if(S.view==="flags"&&canManage(p)){renderBar();renderFlags();return}
   if(S.view==="huddle"){renderBar();renderHuddle();return}
   if(S.view==="goals"&&canManage(p)){renderBar();renderGoals();return}
+  if(S.view==="feedback"&&p.reviewer){renderBar();renderFeedback();return}
   if(S.view==="myreviews"){renderBar();renderMyReviews();return}
   if(S.view==="access"&&canManage(p)){renderBar();renderAccess();return}
   if(S.view==="uploads"&&p.reviewer){renderUploads();return}
